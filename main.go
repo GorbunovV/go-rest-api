@@ -19,26 +19,6 @@ type Album struct {
 	Price  float64 `json:"price"`
 }
 
-type AlbumResponse struct {
-	*Album
-}
-
-type AlbumRequest struct {
-	*Album
-	ProtectedID string `json:"id"`
-}
-
-type ErrResponse struct {
-	Err            error `json:"-"` // low-level runtime error
-	HTTPStatusCode int   `json:"-"` // http response status code
-
-	StatusText string `json:"status"`          // user-level status message
-	AppCode    int64  `json:"code,omitempty"`  // application-specific error code
-	ErrorText  string `json:"error,omitempty"` // application-level error message, for debugging
-}
-
-var ErrNotFound = &ErrResponse{HTTPStatusCode: 404, StatusText: "Resource not found."}
-
 var albums = []*Album{
 	{ID: "1", Title: "Blue Train", Artist: "John Coltrane", Price: 56.99},
 	{ID: "2", Title: "Jeru", Artist: "Gerry Mulligan", Price: 17.99},
@@ -74,11 +54,11 @@ func AlbumCtx(next http.Handler) http.Handler {
 		if albumID := chi.URLParam(r, "albumID"); albumID != "" {
 			album, err = dbGetAlbum(albumID)
 		} else {
-			render.Render(w, r, ErrNotFound)
+			render.JSON(w, r, map[string]interface{}{"code": 404, "success": false, "err": err.Error()})
 			return
 		}
 		if err != nil {
-			render.Render(w, r, ErrNotFound)
+			render.JSON(w, r, map[string]interface{}{"code": 404, "success": false, "err": err.Error()})
 			return
 		}
 
@@ -88,87 +68,53 @@ func AlbumCtx(next http.Handler) http.Handler {
 }
 
 func GetAlbums(w http.ResponseWriter, r *http.Request) {
-	if err := render.RenderList(w, r, NewAlbumsResponse(albums)); err != nil {
-		render.Render(w, r, ErrRender(err))
-		return
-	}
+	render.JSON(w, r, albums)
 }
 
 func CreateAlbum(w http.ResponseWriter, r *http.Request) {
-	data := &AlbumRequest{}
-	if err := render.Bind(r, data); err != nil {
-		render.Render(w, r, ErrInvalidRequest(err))
+	var err error
+	album := &Album{}
+	render.Decode(r, album)
+
+	_, err = dbCreateAlbum(album)
+
+	if err != nil {
+		render.JSON(w, r, map[string]interface{}{"code": 400, "success": false, "err": err.Error()})
 		return
 	}
 
-	album := data.Album
-	dbCreateAlbum(album)
-
 	render.Status(r, http.StatusCreated)
-	render.Render(w, r, NewAlbumResponse(album))
+	render.JSON(w, r, album)
 }
 
 func GetAlbum(w http.ResponseWriter, r *http.Request) {
 	album := r.Context().Value("album").(*Album)
-
-	if err := render.Render(w, r, NewAlbumResponse(album)); err != nil {
-		render.Render(w, r, ErrRender(err))
-		return
-	}
+	render.JSON(w, r, album)
 }
 
 func UpdateAlbum(w http.ResponseWriter, r *http.Request) {
-	album := r.Context().Value("album").(*Album)
-
-	data := &AlbumRequest{Album: album}
-	if err := render.Bind(r, data); err != nil {
-		render.Render(w, r, ErrInvalidRequest(err))
+	var err error
+	oldAlbum := r.Context().Value("album").(*Album)
+	album := &Album{}
+	render.Decode(r, album)
+	album, err = dbUpdateAlbum(oldAlbum.ID, album)
+	if err != nil {
+		render.JSON(w, r, map[string]interface{}{"code": 404, "success": false, "err": err.Error()})
 		return
 	}
-
-	album = data.Album
-	dbUpdateAlbum(album.ID, album)
-
-	render.Render(w, r, NewAlbumResponse(album))
+	render.JSON(w, r, album)
 }
 
 func DeleteAlbum(w http.ResponseWriter, r *http.Request) {
 	var err error
 	album := r.Context().Value("album").(*Album)
-
 	album, err = dbDeleteAlbum(album.ID)
-
 	if err != nil {
-		render.Render(w, r, ErrInvalidRequest(err))
+		render.JSON(w, r, map[string]interface{}{"code": 400, "success": false, "err": err.Error()})
 		return
 	}
 
-	render.Render(w, r, NewAlbumResponse(album))
-}
-
-func (rd *AlbumResponse) Render(w http.ResponseWriter, r *http.Request) error {
-	return nil
-}
-
-func (a *AlbumRequest) Bind(r *http.Request) error {
-	if a.Album == nil {
-		return errors.New("missing required Album fields.")
-	}
-	return nil
-}
-
-func NewAlbumResponse(album *Album) *AlbumResponse {
-	return &AlbumResponse{Album: album}
-}
-
-func NewAlbumsResponse(albums []*Album) []render.Renderer {
-	list := []render.Renderer{}
-
-	for _, album := range albums {
-		list = append(list, NewAlbumResponse(album))
-	}
-
-	return list
+	render.JSON(w, r, album)
 }
 
 //DATABASE
@@ -190,6 +136,7 @@ func dbCreateAlbum(album *Album) (string, error) {
 func dbUpdateAlbum(id string, album *Album) (*Album, error) {
 	for i, a := range albums {
 		if a.ID == id {
+			album.ID = id
 			albums[i] = album
 			return album, nil
 		}
@@ -205,28 +152,4 @@ func dbDeleteAlbum(id string) (*Album, error) {
 		}
 	}
 	return nil, errors.New("alnum not found.")
-}
-
-//ERROR
-func (e *ErrResponse) Render(w http.ResponseWriter, r *http.Request) error {
-	render.Status(r, e.HTTPStatusCode)
-	return nil
-}
-
-func ErrInvalidRequest(err error) render.Renderer {
-	return &ErrResponse{
-		Err:            err,
-		HTTPStatusCode: 400,
-		StatusText:     "Invalid request.",
-		ErrorText:      err.Error(),
-	}
-}
-
-func ErrRender(err error) render.Renderer {
-	return &ErrResponse{
-		Err:            err,
-		HTTPStatusCode: 422,
-		StatusText:     "Error rendering response.",
-		ErrorText:      err.Error(),
-	}
 }
